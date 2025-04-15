@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grok Web Chat V6 (API Key & Edit)</title> <!-- 更新標題 -->
+    <link rel="stylesheet" href="style.css">
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" integrity="sha512-iecdLmaskl7CVkqkXNQ/ZH/XLlvWZOJyj7Yy7tcenmpD1ypASozpmT/E0iPtmFIB46ZmdtAc9eNBvH0H/ZpiBw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <!-- Marked.js -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- DOMPurify -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
+</head>
+<body>
+    <div class="chat-container">
+        <!-- 側邊欄 -->
+        <div class="sidebar" id="sidebar">
+            <h2><i class="fa-solid fa-robot"></i> Grok Chat</h2>
+            <hr>
+
+            <!-- API Key Section -->
+            <div class="api-section">
+                <label for="api-key-input"><i class="fas fa-key"></i> API 金鑰:</label>
+                <input type="password" id="api-key-input" placeholder="請輸入您的 xAI API 金鑰">
+                <button id="connect-api-button" title="儲存金鑰並測試連線">
+                    <i class="fas fa-plug"></i> 連線
+                </button>
+                 <small id="api-status" class="api-status-message">請輸入金鑰並連線</small>
+                 <button id="clear-api-key-button" title="清除已儲存的金鑰" style="display: none;">
+                     <i class="fas fa-eraser"></i> 清除金鑰
+                 </button>
+            </div>
+            <hr>
+
+            <label for="model-selector"><i class="fas fa-cogs"></i> 選擇模型:</label>
+            <select id="model-selector" title="選擇要對話的 Grok 模型">
+                 <option value="grok-3-mini-beta" selected>Grok 3 Mini (Beta)</option>
+                 <option value="grok-3-latest">Grok 3 Latest</option>
+                 <option value="grok-3-fast-beta">Grok 3 Fast (Beta)</option>
+                 <option value="grok-3-beta">Grok 3 (Beta)</option>
+                 <option value="grok-2-1212">Grok 2 (1212)</option>
+            </select>
+            <button id="export-button" title="匯出目前對話記錄 (JSON)"><i class="fas fa-download"></i> 匯出對話</button>
+            <button id="import-button" title="匯入對話記錄 (JSON)"><i class="fas fa-upload"></i> 匯入對話</button>
+            <input type="file" id="import-file-input" accept=".json" style="display: none;">
+            <button id="clear-button" title="清除目前所有對話"><i class="fas fa-trash-alt"></i> 清除對話</button>
+            <hr>
+            <button id="theme-toggle-button" title="切換淺色/深色模式"><i class="fas fa-sun"></i> 切換主題</button>
+
+             <button id="close-sidebar-button" class="mobile-only close-button" title="關閉選單"><i class="fas fa-times"></i></button>
+        </div>
+        <!-- 遮罩層 -->
+        <div class="sidebar-overlay" id="sidebar-overlay"></div>
+        <!-- 主要聊天區 -->
+        <div class="main-chat-area">
+            <!-- 手機版 Header -->
+            <div class="mobile-header mobile-only">
+                <button id="menu-toggle-button" title="開啟選單"><i class="fas fa-bars"></i></button>
+                <span class="mobile-title">Grok Chat</span>
+            </div>
+            <!-- 聊天訊息區 -->
+            <div class="chat-messages" id="chat-messages">
+                <div class="message system-message">請先在側邊欄輸入您的 API 金鑰並點擊「連線」。</div>
+            </div>
+            <!-- 輸入區 -->
+            <div class="chat-input-area">
+                 <!-- 添加 disabled 類別，由 JS 控制 -->
+                <textarea id="user-input" placeholder="請先連線 API..." rows="1" class="chat-disabled" disabled></textarea>
+                <button id="send-button" title="傳送訊息" class="chat-disabled" disabled><i class="fas fa-paper-plane"></i></button>
+            </div>
+        </div>
+    </div>
+    <!-- 將 script 放在 body 結尾 -->
+    <script src="script.js"></script>
+</body>
+</html>
