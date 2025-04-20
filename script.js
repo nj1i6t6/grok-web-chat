@@ -1,6 +1,10 @@
 /**
- * Grok Web Chat - V8 (Refactored)
+ * Grok Web Chat - V8 (Refactored with User Requests & Edit Bug Fix - Approach 2: Match Height)
  * Manages frontend logic for interacting with Grok API via localStorage.
+ * Changes:
+ * 1. Enter key now creates a newline, does not send.
+ * 2. Auto-connects with stored API key on page load.
+ * 3. In-place message editing UI (Uses original height for initial textarea size).
  */
 document.addEventListener('DOMContentLoaded', () => {
     // --- Configuration ---
@@ -94,7 +98,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
             return false;
-        }, // <<< Comma added here
+        },
         saveActiveSessionId: () => localStorage.setItem(config.localStorageKeys.activeId, state.activeSessionId),
         loadActiveSessionId: () => localStorage.getItem(config.localStorageKeys.activeId),
         saveApiKey: () => localStorage.setItem(config.localStorageKeys.apiKey, state.apiKey),
@@ -116,6 +120,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (id) messageDiv.dataset.id = id;
             const contentContainer = document.createElement('div');
             contentContainer.classList.add('message-content');
+
             switch (role) {
                 case 'user':
                     messageDiv.classList.add('user-message');
@@ -135,7 +140,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     break;
                 default: return null;
             }
+
             messageDiv.appendChild(contentContainer);
+
+            // Store original raw content for editing
+            messageDiv.dataset.originalContent = content;
+
             if (id && (role === 'user' || role === 'assistant')) {
                 const actionsContainer = document.createElement('div');
                 actionsContainer.classList.add('message-actions');
@@ -201,24 +211,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 renameButton.addEventListener('click', (e) => {
                     e.stopPropagation();
                     events.handleSessionRename(session.sessionId);
-                    li.classList.remove('rename-visible'); // Hide after click
+                    li.classList.remove('rename-visible');
                 });
 
                 li.appendChild(nameSpan);
                 li.appendChild(renameButton);
 
-                // Click on the list item itself selects the session
                 li.addEventListener('click', (e) => {
-                    if (e.target.closest('.session-rename-button')) return; // Don't select if rename clicked
+                    if (e.target.closest('.session-rename-button')) return;
                     events.handleSessionSelect(session.sessionId);
                 });
-                // Add long press event listeners
                 li.addEventListener('mousedown', events.handleSessionPressStart);
                 li.addEventListener('mouseup', events.handleSessionPressEnd);
                 li.addEventListener('mouseleave', events.handleSessionPressEnd);
                 li.addEventListener('touchstart', events.handleSessionPressStart, { passive: true });
                 li.addEventListener('touchend', events.handleSessionPressEnd);
-                li.addEventListener('touchmove', events.handleSessionPressEnd); // Cancel long press if finger moves
+                li.addEventListener('touchmove', events.handleSessionPressEnd);
 
                 listContainer.appendChild(li);
             });
@@ -265,35 +273,154 @@ document.addEventListener('DOMContentLoaded', () => {
             const shouldEnable = enabled && !!state.apiKey;
             userInputEl.disabled = !shouldEnable; sendButtonEl.disabled = !shouldEnable;
             userInputEl.classList.toggle('chat-disabled', !shouldEnable); sendButtonEl.classList.toggle('chat-disabled', !shouldEnable);
-            userInputEl.placeholder = shouldEnable ? "輸入訊息... (Shift+Enter 換行)" : (state.apiKey ? "點擊 '連線' 按鈕測試連線..." : "請先連線 API...");
+            if (state.apiKey) {
+                 userInputEl.placeholder = shouldEnable ? "輸入訊息..." : "正在連線或連線失敗，請稍候或檢查金鑰...";
+            } else {
+                 userInputEl.placeholder = "請先在側邊欄輸入並連線 API...";
+            }
+             sendButtonEl.title = shouldEnable ? "傳送訊息" : "無法傳送";
         },
         updateThemeUI: () => { ui.getElement('body').classList.toggle('dark-mode', state.currentTheme === 'dark'); const icon = ui.getElement('themeToggleButton').querySelector('i'); icon.className = state.currentTheme === 'dark' ? 'fas fa-moon' : 'fas fa-sun'; },
         adjustTextareaHeight: () => { const textarea = ui.getElement('userInput'); const maxHeight = 120; textarea.style.height = 'auto'; const newHeight = Math.min(textarea.scrollHeight, maxHeight); textarea.style.height = `${newHeight}px`; },
+
+        // --- REVISED In-Place Editing UI Functions (Approach 2: Match Height) ---
         showEditUI: (messageElement, initialContent) => {
-            messageElement.classList.add('editing'); ui.hideAllMessageActions();
-            const contentContainer = messageElement.querySelector('.message-content'); if (!contentContainer) return;
-            const editAreaDiv = document.createElement('div'); editAreaDiv.classList.add('message-edit-area');
-            const textarea = document.createElement('textarea'); textarea.value = initialContent;
-            textarea.rows = Math.min(10, Math.max(3, initialContent.split('\n').length));
-            ui.adjustTextareaHeightForEdit(textarea);
-            textarea.addEventListener('input', () => ui.adjustTextareaHeightForEdit(textarea));
-            const controlsDiv = document.createElement('div'); controlsDiv.classList.add('message-edit-controls');
+            messageElement.classList.add('editing');
+            ui.hideAllMessageActions(); // Hide action buttons on other messages
+
+            const contentContainer = messageElement.querySelector('.message-content');
+            if (!contentContainer) return;
+
+            // --- Step 1: Capture original height ---
+            const originalHeight = contentContainer.offsetHeight;
+            // ---
+
+            // Store original HTML content for potential cancellation
+            const rawOriginalContent = messageElement.dataset.originalContent || initialContent;
+            messageElement.dataset.editingOriginalHtml = contentContainer.innerHTML;
+
+            // Clear the container
+            contentContainer.innerHTML = '';
+
+            // --- Step 2: Create textarea & controls ---
+            const textarea = document.createElement('textarea');
+            textarea.value = rawOriginalContent;
+            textarea.classList.add('inline-edit-textarea');
+            // Initial rows don't matter as much now, height calculation will override
+            textarea.rows = 3; // Set a small default, will be adjusted
+
+            const controlsDiv = document.createElement('div');
+            controlsDiv.classList.add('inline-edit-controls');
             controlsDiv.innerHTML = `<button class="cancel-edit-button">取消</button><button class="save-edit-button">保存</button>`;
-            editAreaDiv.appendChild(textarea); editAreaDiv.appendChild(controlsDiv);
-            messageElement.appendChild(editAreaDiv);
-            textarea.focus(); textarea.select();
+            // ---
+
+            // --- Step 3: Estimate controls height ---
+            const estimatedControlsHeight = 35; // Adjust this value if needed (pixels)
+            // ---
+
+            // --- Step 4: Calculate and set initial textarea min-height ---
+            // Ensure a minimum reasonable height (e.g., 50px)
+            const targetTextareaMinHeight = Math.max(50, originalHeight - estimatedControlsHeight);
+            textarea.style.minHeight = `${targetTextareaMinHeight}px`;
+            // ---
+
+            // Append textarea and controls
+            contentContainer.appendChild(textarea);
+            contentContainer.appendChild(controlsDiv);
+
+            // --- Step 5: Adjust height based on content, respecting min/max ---
+            ui.adjustTextareaHeightForEdit(textarea); // Call adjust function immediately
+            // ---
+
+            textarea.focus();
+            textarea.select();
         },
-        hideEditUI: (messageElement) => { const editArea = messageElement?.querySelector('.message-edit-area'); if (editArea) editArea.remove(); messageElement?.classList.remove('editing'); },
+
+        hideEditUI: (messageElement) => {
+             if (!messageElement || !messageElement.classList.contains('editing')) return;
+
+             const contentContainer = messageElement.querySelector('.message-content');
+
+             // Restore original content (handles re-rendering if needed)
+             if (contentContainer && messageElement.dataset.editingOriginalHtml) {
+                 contentContainer.innerHTML = messageElement.dataset.editingOriginalHtml;
+             } else if (contentContainer && messageElement.dataset.originalContent) {
+                  // Fallback re-render
+                  const originalRaw = messageElement.dataset.originalContent;
+                  const role = messageElement.classList.contains('user-message') ? 'user' : 'assistant';
+                  if (role === 'user') {
+                      contentContainer.textContent = originalRaw;
+                  } else {
+                      try {
+                          const rawHtml = marked.parse(originalRaw, { gfm: true, breaks: true });
+                          contentContainer.innerHTML = DOMPurify.sanitize(rawHtml, { USE_PROFILES: { html: true } });
+                      } catch (e) {
+                          contentContainer.textContent = originalRaw;
+                      }
+                  }
+             } else {
+                  console.warn("Could not restore original content for message:", messageElement.dataset.id);
+                 if (contentContainer) contentContainer.innerHTML = '[恢復內容失敗]';
+             }
+
+             // Clean up state and class
+             messageElement.classList.remove('editing');
+             delete messageElement.dataset.editingOriginalHtml;
+             // No need to manually remove textarea/controls, they are gone with innerHTML reset
+        },
+        // --- End REVISED In-Place Editing UI Functions ---
+
         hideAllMessageActions: () => { document.querySelectorAll('.message.actions-visible').forEach(el => { if (!el.classList.contains('editing')) el.classList.remove('actions-visible'); }); },
-        adjustTextareaHeightForEdit: (textarea) => { const maxHeight = 200; textarea.style.height = 'auto'; const newHeight = Math.min(textarea.scrollHeight, maxHeight); textarea.style.height = `${newHeight}px`; },
+
+        adjustTextareaHeightForEdit: (textarea) => {
+            const maxHeight = 400; // Keep the increased max height from previous step
+            // Get the computed minHeight style value
+            const computedMinHeight = parseInt(window.getComputedStyle(textarea).minHeight, 10) || 0;
+
+            textarea.style.height = 'auto'; // Reset height
+            const scrollHeight = textarea.scrollHeight;
+
+            // Determine the new height:
+            // It should be at least the scrollHeight (content height)
+            // AND at least the computedMinHeight (set based on original bubble)
+            // AND at most the maxHeight
+            const newHeight = Math.min(maxHeight, Math.max(computedMinHeight, scrollHeight));
+
+            textarea.style.height = `${newHeight}px`;
+            textarea.style.overflowY = (scrollHeight > maxHeight || newHeight >= maxHeight) ? 'auto' : 'hidden'; // Show scroll if content exceeds max OR if height is set to max
+        },
+
         closeSidebarIfMobile: () => { if (window.innerWidth <= 768) events.handleCloseSidebar(); },
-        // Helper to hide all visible rename buttons
         hideAllRenameButtons: () => { document.querySelectorAll('#chat-session-list li.rename-visible').forEach(item => item.classList.remove('rename-visible')); }
     };
 
     // --- API Module (Backend Communication) ---
     const api = {
-        testApiKey: async (keyToTest) => { try { const response = await fetch(config.apiUrls.models, { method: 'GET', headers: { 'Authorization': `Bearer ${keyToTest}` } }); if (response.ok) return true; else { let errorMsg = `連線失敗 (${response.status})`; try { const errorData = await response.json(); errorMsg += `: ${errorData.error?.message || errorData.error || JSON.stringify(errorData)}`; } catch(e) { errorMsg += `: ${response.statusText}`; } ui.updateApiStatus(errorMsg, "error"); console.error("API Key validation failed:", errorMsg); return false; } } catch (error) { ui.updateApiStatus(`網路錯誤: ${error.message}`, "error"); console.error("Error testing API key:", error); return false; } },
+        testApiKey: async (keyToTest) => {
+             console.log("Testing API Key...");
+             try {
+                 const response = await fetch(config.apiUrls.models, { method: 'GET', headers: { 'Authorization': `Bearer ${keyToTest}` } });
+                 if (response.ok) {
+                     console.log("API Key Test: Success");
+                     return true;
+                 } else {
+                     let errorMsg = `連線失敗 (${response.status})`;
+                     try {
+                         const errorData = await response.json();
+                         errorMsg += `: ${errorData.error?.message || errorData.error || JSON.stringify(errorData)}`;
+                     } catch(e) {
+                         errorMsg += `: ${response.statusText}`;
+                     }
+                     ui.updateApiStatus(errorMsg, "error");
+                     console.error("API Key validation failed:", errorMsg);
+                     return false;
+                 }
+             } catch (error) {
+                 ui.updateApiStatus(`網路錯誤: ${error.message}`, "error");
+                 console.error("Error testing API key:", error);
+                 return false;
+             }
+         },
         callGrokApi: async () => {
             const userInputEl = ui.getElement('userInput'); const userText = userInputEl.value.trim(); if (!userText || state.isLoading) return;
             if (!state.apiKey) { ui.showSystemMessage('請先在側邊欄連線 API 金鑰。', `error-no-api-${logic.generateMessageId()}`, true); events.handleSidebarToggle(true); return; }
@@ -301,7 +428,10 @@ document.addEventListener('DOMContentLoaded', () => {
             state.isLoading = true; ui.updateChatInputState(false);
             const userMessageId = logic.generateMessageId(); const userMessage = { role: 'user', content: userText, id: userMessageId, timestamp: Date.now() };
             logic.addMessageToCurrentSession(userMessage);
-            ui.getElement('chatMessages').appendChild(ui.renderMessage(userMessage)); ui.scrollToBottom();
+            const newMessageElement = ui.renderMessage(userMessage);
+            if (newMessageElement) ui.getElement('chatMessages').appendChild(newMessageElement);
+
+            ui.scrollToBottom();
             userInputEl.value = ''; ui.adjustTextareaHeight();
             const loadingId = `loading-${userMessageId}`; ui.showLoadingIndicator(loadingId);
             try {
@@ -321,7 +451,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         const assistantReply = data.choices[0].message.content.trim(); const assistantMessageId = logic.generateMessageId();
                         const assistantMessage = { role: 'assistant', content: assistantReply, id: assistantMessageId, timestamp: Date.now() };
                         logic.addMessageToCurrentSession(assistantMessage);
-                        const newMsgElement = ui.renderMessage(assistantMessage); if(newMsgElement) ui.getElement('chatMessages').appendChild(newMsgElement); ui.scrollToBottom();
+                         const newAssistantMsgElement = ui.renderMessage(assistantMessage);
+                         if(newAssistantMsgElement) ui.getElement('chatMessages').appendChild(newAssistantMsgElement);
+                         ui.scrollToBottom();
                     } else { console.error('Invalid API response structure:', data); ui.showSystemMessage('收到無效的 API 回應格式。', `error-api-format-${logic.generateMessageId()}`, true); }
                 }
             } catch (error) { console.error('Error calling Grok API:', error); ui.removeElementById(loadingId); if (error.message && !error.message.includes('API 請求失敗')) { ui.showSystemMessage(`客戶端網路或處理錯誤: ${error.message}`, `error-client-${logic.generateMessageId()}`, true); } } finally { state.isLoading = false; ui.updateChatInputState(true); userInputEl.focus(); }
@@ -339,39 +471,87 @@ document.addEventListener('DOMContentLoaded', () => {
         deleteMessageFromSession: (sessionId, messageId) => { const session = state.sessions.find(s => s.sessionId === sessionId); const messageIndex = session?.messages.findIndex(msg => msg.id === messageId); if (session && messageIndex !== undefined && messageIndex > -1) { session.messages.splice(messageIndex, 1); storage.saveSessions(); return true; } console.error(`Failed to delete message: session ${sessionId}, message ${messageId}`); return false; },
         deleteSession: (sessionId) => { const sessionIndex = state.sessions.findIndex(s => s.sessionId === sessionId); if (sessionIndex > -1) { state.sessions.splice(sessionIndex, 1); storage.saveSessions(); return true; } console.error(`Failed to delete session: ${sessionId}`); return false; },
         renameSession: (sessionId, newName) => { const session = state.sessions.find(s => s.sessionId === sessionId); const trimmedName = newName?.trim(); if (session && trimmedName) { session.name = trimmedName; storage.saveSessions(); return true; } console.warn(`Failed to rename session ${sessionId} to "${newName}" (name empty or session not found)`); return false; },
-        clearApiKey: (confirmUser = true) => { const doClear = !confirmUser || confirm("確定要清除已儲存的 API 金鑰嗎？"); if (doClear) { state.apiKey = null; storage.removeApiKey(); ui.getElement('apiKeyInput').value = ''; ui.getElement('apiKeyInput').type = 'text'; ui.updateApiStatus("金鑰已清除，請重新輸入並連線", ""); ui.updateChatInputState(false); ui.getElement('clearApiKeyButton').style.display = 'none'; console.log("API Key cleared."); return true; } return false; }
+        clearApiKey: (confirmUser = true) => {
+            const doClear = !confirmUser || confirm("確定要清除已儲存的 API 金鑰嗎？您需要重新輸入才能使用。");
+            if (doClear) {
+                state.apiKey = null;
+                storage.removeApiKey();
+                ui.getElement('apiKeyInput').value = '';
+                ui.getElement('apiKeyInput').type = 'text';
+                ui.updateApiStatus("金鑰已清除，請重新輸入並連線", "");
+                ui.updateChatInputState(false);
+                ui.getElement('clearApiKeyButton').style.display = 'none';
+                console.log("API Key cleared.");
+                return true;
+            }
+            return false;
+        }
      };
 
     // --- Event Handling Module ---
     const events = {
         handleApiKeyConnection: () => {
-            const inputKey = ui.getElement('apiKeyInput').value.trim(); if (!inputKey) { ui.updateApiStatus("請輸入 API 金鑰", "error"); return; }
-            ui.updateApiStatus("正在測試連線...", "testing"); ui.getElement('connectApiButton').disabled = true; ui.getElement('apiKeyInput').disabled = true;
+            const inputKey = ui.getElement('apiKeyInput').value.trim();
+            if (!inputKey) { ui.updateApiStatus("請輸入 API 金鑰", "error"); return; }
+            if (state.isLoading) return;
+
+            state.isLoading = true;
+            ui.updateApiStatus("正在測試連線...", "testing");
+            ui.getElement('connectApiButton').disabled = true;
+            ui.getElement('apiKeyInput').disabled = true;
+            ui.getElement('clearApiKeyButton').disabled = true;
+
             api.testApiKey(inputKey).then(isValid => {
-                if (isValid) { state.apiKey = inputKey; storage.saveApiKey(); ui.updateApiStatus("連線成功！", "success"); ui.updateChatInputState(true); ui.getElement('clearApiKeyButton').style.display = 'block'; ui.getElement('apiKeyInput').value = '********'; ui.getElement('apiKeyInput').type = 'password'; ui.closeSidebarIfMobile(); }
-                else { state.apiKey = null; storage.removeApiKey(); ui.updateChatInputState(false); ui.getElement('clearApiKeyButton').style.display = 'none'; ui.getElement('apiKeyInput').type = 'text'; }
-                ui.getElement('connectApiButton').disabled = false; ui.getElement('apiKeyInput').disabled = false;
+                if (isValid) {
+                    state.apiKey = inputKey;
+                    storage.saveApiKey();
+                    ui.updateApiStatus("連線成功！", "success");
+                    ui.updateChatInputState(true);
+                    ui.getElement('clearApiKeyButton').style.display = 'block';
+                    ui.getElement('apiKeyInput').value = '********';
+                    ui.getElement('apiKeyInput').type = 'password';
+                    ui.closeSidebarIfMobile();
+                } else {
+                    state.apiKey = null;
+                    storage.removeApiKey();
+                    ui.updateChatInputState(false);
+                    ui.getElement('clearApiKeyButton').style.display = 'none';
+                    ui.getElement('apiKeyInput').type = 'text';
+                }
+                state.isLoading = false;
+                ui.getElement('connectApiButton').disabled = false;
+                ui.getElement('apiKeyInput').disabled = false;
+                ui.getElement('clearApiKeyButton').disabled = false;
             });
         },
         handleClearApiKey: () => { if (logic.clearApiKey(true)) { ui.closeSidebarIfMobile(); } },
         handleNewChat: () => {
-            if (state.currentEditingMessageId) { if (!confirm("您正在編輯訊息，新增聊天將丟失未保存的更改。確定要繼續嗎？")) { return; } events.handleCancelEdit(state.currentEditingMessageId); }
+            if (state.currentEditingMessageId) { if (!confirm("您正在編輯訊息，新增聊天將丟失未保存的更改。確定要繼續嗎？")) { return; } events.handleCancelEdit(state.currentEditingMessageId, true); } // Force cancel
             const now = Date.now(); const newSession = { sessionId: logic.generateSessionId(), name: `新聊天 ${new Date(now).toLocaleTimeString('zh-TW', { hour12: false })}`, messages: [], createdAt: now, lastUpdatedAt: now };
             state.sessions.unshift(newSession); state.activeSessionId = newSession.sessionId;
             storage.saveSessions(); ui.renderSessionList(); ui.loadSessionUI(newSession.sessionId);
             ui.closeSidebarIfMobile(); ui.getElement('userInput').focus();
         },
         handleSessionSelect: (sessionId) => {
-            if (state.currentEditingMessageId) { const messageElement = document.querySelector(`.message[data-id="${state.currentEditingMessageId}"]`); const editTextArea = messageElement?.querySelector('.message-edit-area textarea'); const originalContent = logic.getCurrentSession()?.messages.find(m => m.id === state.currentEditingMessageId)?.content; if (editTextArea && editTextArea.value.trim() !== originalContent?.trim()) { if (!confirm("您正在編輯訊息，切換聊天將丟失未保存的更改。確定要切換嗎？")) { return; } } events.handleCancelEdit(state.currentEditingMessageId); }
-            if (sessionId !== state.activeSessionId) ui.loadSessionUI(sessionId);
-            ui.closeSidebarIfMobile();
-            ui.hideAllRenameButtons(); // Hide rename button on selection
+             if (state.currentEditingMessageId) {
+                 const messageElement = document.querySelector(`.message[data-id="${state.currentEditingMessageId}"]`);
+                 const editTextArea = messageElement?.querySelector('.message-content textarea.inline-edit-textarea');
+                 const originalContent = messageElement?.dataset?.originalContent;
+                 if (editTextArea && originalContent && editTextArea.value !== originalContent) {
+                     if (!confirm("您正在編輯訊息，切換聊天將丟失未保存的更改。確定要切換嗎？")) {
+                         return;
+                     }
+                 }
+                 events.handleCancelEdit(state.currentEditingMessageId, true); // Force cancel
+             }
+            if (sessionId !== state.activeSessionId) { ui.loadSessionUI(sessionId); }
+             ui.closeSidebarIfMobile();
+             ui.hideAllRenameButtons();
         },
         handleSessionRename: (sessionId) => {
             const session = state.sessions.find(s => s.sessionId === sessionId); if (!session) return;
             const currentName = session.name || `聊天 ${sessionId.slice(-4)}`; const newName = prompt("請輸入新的聊天名稱：", currentName);
             if (newName !== null) { if (logic.renameSession(sessionId, newName)) { ui.renderSessionList(); if (sessionId === state.activeSessionId) ui.getElement('mobileChatTitle').textContent = newName.trim() || `聊天 ${sessionId.slice(-4)}`; } else if (!newName || !newName.trim()){ alert("聊天名稱不能為空！"); } }
-            // No need to explicitly hide button here, renderSessionList redraws it hidden
         },
         handleExportChat: () => {
             const currentSession = logic.getCurrentSession(); if (!currentSession || currentSession.messages.length === 0) { alert('目前聊天沒有內容可匯出。'); return; }
@@ -404,8 +584,23 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!state.activeSessionId) { alert("沒有選擇要刪除的聊天。"); return; } if (state.sessions.length <= 1) { alert("無法刪除最後一個聊天會話。您可以新增一個新的聊天後再刪除此聊天。"); return; }
             const currentSession = logic.getCurrentSession();
             if (currentSession && confirm(`確定要永久刪除聊天 "${currentSession.name || '此聊天'}" 嗎？此操作無法復原。`)) {
-                const sessionIndex = state.sessions.findIndex(s => s.sessionId === state.activeSessionId); const deletedSessionId = state.activeSessionId;
-                if (logic.deleteSession(state.activeSessionId)) { let nextSessionId = null; if (state.sessions.length > 0) { const nextIndex = Math.max(0, sessionIndex - 1); nextSessionId = state.sessions[nextIndex]?.sessionId; } ui.renderSessionList(); if (nextSessionId) { ui.loadSessionUI(nextSessionId); } else { events.handleNewChat(); } }
+                if (state.currentEditingMessageId && state.activeSessionId === logic.getCurrentSession()?.sessionId) {
+                    events.handleCancelEdit(state.currentEditingMessageId, true); // Force cancel without prompt
+                }
+                const sessionIndex = state.sessions.findIndex(s => s.sessionId === state.activeSessionId);
+                if (logic.deleteSession(state.activeSessionId)) {
+                    let nextSessionId = null;
+                    if (state.sessions.length > 0) {
+                        const nextIndex = Math.max(0, sessionIndex - 1);
+                        nextSessionId = state.sessions[nextIndex]?.sessionId;
+                    }
+                    ui.renderSessionList();
+                    if (nextSessionId) {
+                        ui.loadSessionUI(nextSessionId);
+                    } else {
+                        events.handleNewChat();
+                    }
+                }
             }
             ui.closeSidebarIfMobile();
         },
@@ -415,70 +610,213 @@ document.addEventListener('DOMContentLoaded', () => {
         handleSidebarToggle: (forceOpen = false) => { const body = ui.getElement('body'); if (forceOpen) body.classList.add('sidebar-open'); else body.classList.toggle('sidebar-open'); },
         handleCloseSidebar: () => { ui.getElement('body').classList.remove('sidebar-open'); },
         handleTextareaInput: () => { ui.adjustTextareaHeight(); },
-        handleTextareaKeydown: (event) => { if (event.key === 'Enter' && !event.shiftKey && !state.isLoading) { event.preventDefault(); events.handleSendMessage(); } },
+        handleTextareaKeydown: (event) => { /* Enter key functionality removed */ },
         handleMessageActions: (event) => {
             const target = event.target;
-            // Click outside relevant areas? Hide actions / cancel edit.
-            if (!target.closest('.message') && !target.closest('.sidebar') && !target.closest('.mobile-header') && !target.closest('.message-edit-area')) { if (state.currentEditingMessageId) events.handleCancelEdit(state.currentEditingMessageId); ui.hideAllMessageActions(); return; }
-            const messageElement = target.closest('.message[data-id]'); if (!messageElement) return; const messageId = messageElement.dataset.id;
-            // Handle clicks within the edit controls of *this* message
-            if (messageElement.classList.contains('editing')) { const saveButton = target.closest('.save-edit-button'); const cancelButton = target.closest('.cancel-edit-button'); if (saveButton) events.handleSaveEdit(messageId, messageElement); else if (cancelButton) events.handleCancelEdit(messageId); return; }
-            // Clicked on a different message while another is being edited? Cancel the old edit.
-            if (state.currentEditingMessageId && state.currentEditingMessageId !== messageId) events.handleCancelEdit(state.currentEditingMessageId);
-            // Handle clicks on action buttons
+            const messageElement = target.closest('.message[data-id]');
+
+            // Click outside relevant areas? Cancel edit / hide actions.
+            if (!target.closest('.message') && !target.closest('.sidebar') && !target.closest('.mobile-header')) {
+                if (state.currentEditingMessageId) {
+                    const currentMessageElement = document.querySelector(`.message[data-id="${state.currentEditingMessageId}"]`);
+                    const editTextArea = currentMessageElement?.querySelector('.message-content textarea.inline-edit-textarea');
+                    const originalContent = currentMessageElement?.dataset?.originalContent;
+                    if (editTextArea && originalContent && editTextArea.value !== originalContent) {
+                         if (!confirm("您正在編輯訊息，點擊其他地方將丟失未保存的更改。確定要取消編輯嗎？")) {
+                             return;
+                         }
+                    }
+                    events.handleCancelEdit(state.currentEditingMessageId, true); // Force cancel
+                }
+                ui.hideAllMessageActions();
+                return;
+            }
+
+            if (!messageElement) return;
+            const messageId = messageElement.dataset.id;
+
+            // Handle clicks within the edit controls (Save/Cancel) of *this* message
+            if (messageElement.classList.contains('editing')) {
+                 const saveButton = target.closest('.inline-edit-controls .save-edit-button');
+                 const cancelButton = target.closest('.inline-edit-controls .cancel-edit-button');
+                 if (saveButton) events.handleSaveEdit(messageId, messageElement);
+                 else if (cancelButton) events.handleCancelEdit(messageId);
+                 return;
+            }
+
+            // Clicked on a different message while another is being edited?
+            if (state.currentEditingMessageId && state.currentEditingMessageId !== messageId) {
+                const currentMessageElement = document.querySelector(`.message[data-id="${state.currentEditingMessageId}"]`);
+                const editTextArea = currentMessageElement?.querySelector('.message-content textarea.inline-edit-textarea');
+                const originalContent = currentMessageElement?.dataset?.originalContent;
+                 if (editTextArea && originalContent && editTextArea.value !== originalContent) {
+                     if (!confirm("您正在編輯另一則訊息，點擊此處將丟失未保存的更改。確定要取消編輯嗎？")) {
+                         return;
+                     }
+                 }
+                events.handleCancelEdit(state.currentEditingMessageId, true); // Force cancel
+            }
+
+            // Handle clicks on action buttons (Copy, Edit, Delete)
             const actionButton = target.closest('.message-actions .action-button');
-            if (actionButton) { const messageData = logic.getCurrentSession()?.messages.find(msg => msg.id === messageId); if (!messageData) return; if (actionButton.classList.contains('action-copy')) events.handleCopyMessage(messageData.content, actionButton); else if (actionButton.classList.contains('action-delete')) events.handleDeleteMessage(messageId, messageElement); else if (actionButton.classList.contains('action-edit')) events.handleStartEdit(messageElement, messageData); ui.hideAllMessageActions(); event.stopPropagation(); return; }
-            // Clicked directly on the message body - toggle action visibility
-            if (!target.closest('.message-actions') && !target.closest('.message-edit-area')) { const currentlyVisible = document.querySelector('.message.actions-visible'); if (currentlyVisible && currentlyVisible !== messageElement) currentlyVisible.classList.remove('actions-visible'); messageElement.classList.toggle('actions-visible'); event.stopPropagation(); }
+            if (actionButton) {
+                 const messageData = logic.getCurrentSession()?.messages.find(msg => msg.id === messageId);
+                 if (!messageData) return;
+
+                 if (actionButton.classList.contains('action-copy')) {
+                     events.handleCopyMessage(messageElement.dataset.originalContent || messageData.content, actionButton);
+                 } else if (actionButton.classList.contains('action-delete')) {
+                     events.handleDeleteMessage(messageId, messageElement);
+                 } else if (actionButton.classList.contains('action-edit')) {
+                     events.handleStartEdit(messageElement, messageElement.dataset.originalContent || messageData.content);
+                 }
+                 event.stopPropagation();
+                 return;
+             }
+
+            // Clicked directly on the message body (not actions, not while editing) - toggle action visibility
+            if (!target.closest('.message-actions') && !target.closest('.message-content')) {
+                 const currentlyVisible = document.querySelector('.message.actions-visible');
+                 if (currentlyVisible && currentlyVisible !== messageElement) {
+                     currentlyVisible.classList.remove('actions-visible');
+                 }
+                 messageElement.classList.toggle('actions-visible');
+                 event.stopPropagation();
+            }
         },
         handleCopyMessage: (content, buttonElement) => { if (!content) return; navigator.clipboard.writeText(content).then(() => { const originalIcon = buttonElement.innerHTML; buttonElement.innerHTML = '<i class="fas fa-check"></i>'; setTimeout(() => { if(buttonElement) buttonElement.innerHTML = originalIcon; }, 1000); }).catch(err => { console.error('Failed to copy message:', err); alert('複製失敗！可能是瀏覽器不支援或未授予權限。'); }); },
         handleDeleteMessage: (messageId, messageElement) => { if (confirm('確定要刪除此訊息嗎？')) { if (logic.deleteMessageFromSession(state.activeSessionId, messageId)) messageElement.remove(); } },
-        handleStartEdit: (messageElement, messageData) => { if (state.currentEditingMessageId && state.currentEditingMessageId !== messageData.id) events.handleCancelEdit(state.currentEditingMessageId); state.currentEditingMessageId = messageData.id; ui.showEditUI(messageElement, messageData.content); },
-        handleSaveEdit: (messageId, messageElement) => {
-            const textarea = messageElement.querySelector('.message-edit-area textarea'); if (!textarea) return; const newContent = textarea.value.trim(); const originalMessage = logic.getCurrentSession()?.messages.find(msg => msg.id === messageId);
-            if (newContent && originalMessage && newContent !== originalMessage.content) { if (logic.updateMessageInSession(state.activeSessionId, messageId, newContent)) { const contentContainer = messageElement.querySelector('.message-content'); const editedIndicator = messageElement.querySelector('.edited-indicator'); if (contentContainer && originalMessage) { if (originalMessage.role === 'user') { contentContainer.textContent = newContent; } else if (originalMessage.role === 'assistant') { try { const rawHtml = marked.parse(newContent, { gfm: true, breaks: true }); contentContainer.innerHTML = DOMPurify.sanitize(rawHtml, { USE_PROFILES: { html: true } }); } catch (e) { contentContainer.textContent = newContent; } } if (!editedIndicator) { const actionsContainer = messageElement.querySelector('.message-actions'); if (actionsContainer) actionsContainer.insertAdjacentHTML('beforeend', '<span class="edited-indicator" title="已編輯"><i class="fas fa-history"></i></span>'); } } ui.hideEditUI(messageElement); state.currentEditingMessageId = null; } }
-            else if (newContent === originalMessage?.content) { ui.hideEditUI(messageElement); state.currentEditingMessageId = null; }
-            else { alert("訊息內容不能為空！"); }
+        handleStartEdit: (messageElement, rawContent) => {
+            const messageId = messageElement.dataset.id;
+            if (!messageId) return;
+
+            if (state.currentEditingMessageId && state.currentEditingMessageId !== messageId) {
+                 const currentMessageElement = document.querySelector(`.message[data-id="${state.currentEditingMessageId}"]`);
+                 const editTextArea = currentMessageElement?.querySelector('.message-content textarea.inline-edit-textarea');
+                 const originalContent = currentMessageElement?.dataset?.originalContent;
+                if (editTextArea && originalContent && editTextArea.value !== originalContent) {
+                     if (!confirm("您正在編輯另一則訊息，開始編輯此訊息將丟失未保存的更改。確定要取消編輯嗎？")) {
+                         return;
+                     }
+                 }
+                events.handleCancelEdit(state.currentEditingMessageId, true); // Force cancel
+            }
+            state.currentEditingMessageId = messageId;
+            ui.showEditUI(messageElement, rawContent);
         },
-        handleCancelEdit: (messageId) => { const messageElement = document.querySelector(`.message[data-id="${messageId}"]`); if (messageElement && messageElement.classList.contains('editing')) ui.hideEditUI(messageElement); if (state.currentEditingMessageId === messageId) state.currentEditingMessageId = null; },
+        handleSaveEdit: (messageId, messageElement) => {
+            const contentContainer = messageElement.querySelector('.message-content');
+            const textarea = contentContainer?.querySelector('textarea.inline-edit-textarea');
+
+            if (!textarea || !contentContainer) {
+                 console.warn("SaveEdit: Textarea or Content Container not found for message", messageId);
+                 if (messageElement) ui.hideEditUI(messageElement);
+                 if (state.currentEditingMessageId === messageId) state.currentEditingMessageId = null;
+                 return;
+            }
+
+            const newContent = textarea.value;
+            const originalMessageData = logic.getCurrentSession()?.messages.find(msg => msg.id === messageId);
+            const originalRawContent = messageElement.dataset.originalContent;
+
+            if (!originalMessageData) {
+                 console.error("SaveEdit: Original message data not found for ID:", messageId);
+                 ui.hideEditUI(messageElement);
+                 state.currentEditingMessageId = null;
+                 alert("儲存編輯時發生錯誤：找不到原始訊息數據。");
+                 return;
+            }
+
+            if (newContent !== originalRawContent) {
+                 if (newContent.trim() === "") {
+                     alert("訊息內容不能為空！");
+                     textarea.focus();
+                     return;
+                 }
+
+                if (logic.updateMessageInSession(state.activeSessionId, messageId, newContent)) {
+                    messageElement.dataset.originalContent = newContent;
+
+                    if (originalMessageData.role === 'user') {
+                         contentContainer.textContent = newContent;
+                         messageElement.dataset.editingOriginalHtml = contentContainer.innerHTML;
+                    } else if (originalMessageData.role === 'assistant') {
+                         try {
+                             const rawHtml = marked.parse(newContent, { gfm: true, breaks: true });
+                             contentContainer.innerHTML = DOMPurify.sanitize(rawHtml, { USE_PROFILES: { html: true } });
+                             messageElement.dataset.editingOriginalHtml = contentContainer.innerHTML;
+                         } catch (e) {
+                             console.error("Error re-rendering edited assistant message:", e);
+                             contentContainer.textContent = newContent;
+                             messageElement.dataset.editingOriginalHtml = contentContainer.innerHTML;
+                         }
+                    }
+
+                    let editedIndicator = messageElement.querySelector('.edited-indicator');
+                     if (!editedIndicator) {
+                         const actionsContainer = messageElement.querySelector('.message-actions');
+                         if (actionsContainer) {
+                             actionsContainer.insertAdjacentHTML('beforeend', '<span class="edited-indicator" title="已編輯"><i class="fas fa-history"></i></span>');
+                         }
+                     }
+
+                    // IMPORTANT: Call hideEditUI *after* potentially adding indicator and updating dataset
+                    ui.hideEditUI(messageElement);
+                    state.currentEditingMessageId = null;
+                 } else {
+                     alert("儲存編輯失敗！請稍後再試。");
+                 }
+            } else {
+                 ui.hideEditUI(messageElement);
+                 state.currentEditingMessageId = null;
+            }
+        },
+        handleCancelEdit: (messageId, force = false) => {
+            const messageElement = document.querySelector(`.message[data-id="${messageId}"]`);
+            if (messageElement && messageElement.classList.contains('editing')) {
+                let confirmed = force;
+                if (!force) {
+                    const editTextArea = messageElement.querySelector('.message-content textarea.inline-edit-textarea');
+                    const originalContent = messageElement.dataset.originalContent;
+                    if (editTextArea && originalContent && editTextArea.value !== originalContent) {
+                        confirmed = confirm("您尚未保存更改，確定要取消編輯嗎？");
+                    } else {
+                        confirmed = true;
+                    }
+                }
+
+                 if (confirmed) {
+                     ui.hideEditUI(messageElement);
+                     if (state.currentEditingMessageId === messageId) {
+                         state.currentEditingMessageId = null;
+                     }
+                 }
+             } else if (state.currentEditingMessageId === messageId) {
+                 state.currentEditingMessageId = null;
+             }
+        },
 
         // --- Long Press Handlers ---
         handleSessionPressStart: (event) => {
             const targetLi = event.target.closest('.session-item');
             if (!targetLi) return;
-            clearTimeout(longPressTimer); // Clear previous timer
-            longPressTargetElement = targetLi; // Record target
-            // Start timer for long press
+            clearTimeout(longPressTimer);
+            longPressTargetElement = targetLi;
             longPressTimer = setTimeout(() => {
-                if (longPressTargetElement === targetLi) { // Check if still pressing same element
-                    ui.hideAllRenameButtons(); // Hide others first
-                    targetLi.classList.add('rename-visible'); // Show this one
-                }
-                longPressTimer = null; // Timer finished
+                if (longPressTargetElement === targetLi) { ui.hideAllRenameButtons(); targetLi.classList.add('rename-visible'); }
+                longPressTimer = null;
             }, LONG_PRESS_DURATION);
         },
-        handleSessionPressEnd: (event) => {
-            clearTimeout(longPressTimer); // Clear timer if released early
-            longPressTimer = null;
-            longPressTargetElement = null; // Reset target
-            // Do NOT hide the button here - let click outside handle it
-        },
+        handleSessionPressEnd: (event) => { clearTimeout(longPressTimer); longPressTimer = null; longPressTargetElement = null; },
         handleDocumentClickForHideRename: (event) => {
-            // Hide rename buttons if clicked outside a rename button itself
             const clickedRenameButton = event.target.closest('.session-rename-button');
-            const clickedListItem = event.target.closest('.session-item'); // Check if click is inside list area
-
-            // If click is outside the session list OR inside but NOT on a rename button
-            if (!clickedListItem || (clickedListItem && !clickedRenameButton)) {
-                ui.hideAllRenameButtons();
-            }
+            const clickedListItem = event.target.closest('.session-item');
+            if (!clickedListItem || (clickedListItem && !clickedRenameButton)) { ui.hideAllRenameButtons(); }
         }
-        // --- End Long Press Handlers ---
     };
 
     // --- Event Listener Setup ---
     function setupEventListeners() {
-        // General UI Listeners
         ui.getElement('sendButton').addEventListener('click', events.handleSendMessage);
         ui.getElement('userInput').addEventListener('input', events.handleTextareaInput);
         ui.getElement('userInput').addEventListener('keydown', events.handleTextareaKeydown);
@@ -495,14 +833,13 @@ document.addEventListener('DOMContentLoaded', () => {
         ui.getElement('newChatButton').addEventListener('click', events.handleNewChat);
         ui.getElement('modelSelector').addEventListener('change', events.handleModelChange);
 
-        // Event delegation for message actions (copy, edit, delete, click-to-show)
+        // Event delegation for message actions & edit controls
         ui.getElement('chatMessages').addEventListener('click', events.handleMessageActions);
 
-        // Global listeners for hiding rename buttons / cancelling edits
-        document.addEventListener('mousedown', events.handleDocumentClickForHideRename, true); // Capture phase
-        document.addEventListener('touchstart', events.handleDocumentClickForHideRename, true); // Capture phase
-
-        // Note: Session list item listeners are now added dynamically in renderSessionList
+        // Global listeners
+        document.addEventListener('mousedown', events.handleDocumentClickForHideRename, true);
+        document.addEventListener('touchstart', events.handleDocumentClickForHideRename, true);
+        document.addEventListener('click', events.handleMessageActions, true); // Handles clicks outside messages for cancel/hide
 
         // console.log("Event listeners attached.");
     }
@@ -518,48 +855,82 @@ document.addEventListener('DOMContentLoaded', () => {
         // 2. Load sessions and determine active session
         const sessionsLoaded = storage.loadSessions();
         if (!sessionsLoaded || state.sessions.length === 0) {
-            events.handleNewChat(); // Create initial if none exist/load failed
+            events.handleNewChat();
         } else {
             const lastActiveId = storage.loadActiveSessionId();
             if (lastActiveId && state.sessions.some(s => s.sessionId === lastActiveId)) {
                 state.activeSessionId = lastActiveId;
             } else if (state.sessions.length > 0) {
-                state.activeSessionId = state.sessions[0].sessionId; // Fallback to most recent
+                state.activeSessionId = state.sessions[0].sessionId;
                 storage.saveActiveSessionId();
             } else {
-                 events.handleNewChat(); // Defensive fallback
+                 events.handleNewChat();
             }
         }
 
         // 3. Initialize UI based on loaded state
         ui.updateThemeUI();
         ui.getElement('modelSelector').value = state.currentModel;
-        ui.renderSessionList(); // Render session list (attaches its own listeners)
+        ui.renderSessionList();
 
-        // Init API Key UI
+        // Init API Key UI & Attempt Auto-Connection
         if (state.apiKey) {
-            ui.getElement('apiKeyInput').value = '********'; ui.getElement('apiKeyInput').type = 'password';
-            ui.updateApiStatus("金鑰已載入，點擊 '連線' 測試", "loaded");
+            ui.getElement('apiKeyInput').value = '********';
+            ui.getElement('apiKeyInput').type = 'password';
             ui.getElement('clearApiKeyButton').style.display = 'block';
-            ui.updateChatInputState(false); // Require connect click
+            ui.updateChatInputState(false);
+            ui.getElement('connectApiButton').disabled = true;
+            ui.getElement('apiKeyInput').disabled = true;
+            ui.updateApiStatus("正在自動測試金鑰...", "testing");
+
+            api.testApiKey(state.apiKey).then(isValid => {
+                if (isValid) {
+                    ui.updateApiStatus("金鑰自動連線成功！", "success");
+                    ui.updateChatInputState(true);
+                } else {
+                    state.apiKey = null;
+                    storage.removeApiKey();
+                    ui.getElement('apiKeyInput').value = ''; // Clear input on auto-fail
+                    ui.getElement('apiKeyInput').type = 'text';
+                    ui.getElement('clearApiKeyButton').style.display = 'none';
+                    ui.updateApiStatus("自動連線失敗，請檢查或重新輸入金鑰。", "error");
+                    ui.updateChatInputState(false);
+                }
+                ui.getElement('connectApiButton').disabled = false;
+                ui.getElement('apiKeyInput').disabled = false;
+            }).catch(err => {
+                console.error("Error during auto-connection sequence:", err);
+                ui.updateApiStatus("自動連線時發生錯誤。", "error");
+                 ui.getElement('connectApiButton').disabled = false;
+                ui.getElement('apiKeyInput').disabled = false;
+                state.apiKey = null;
+                storage.removeApiKey();
+                ui.getElement('apiKeyInput').value = '';
+                ui.getElement('apiKeyInput').type = 'text';
+                ui.getElement('clearApiKeyButton').style.display = 'none';
+                ui.updateChatInputState(false);
+            });
+
         } else {
-            ui.updateApiStatus("請輸入金鑰並連線", ""); ui.updateChatInputState(false);
-            ui.getElement('clearApiKeyButton').style.display = 'none'; ui.getElement('apiKeyInput').type = 'text';
+            ui.updateApiStatus("請輸入金鑰並連線", "");
+            ui.updateChatInputState(false);
+            ui.getElement('clearApiKeyButton').style.display = 'none';
+            ui.getElement('apiKeyInput').type = 'text';
         }
 
-        // Load active session messages
+        // Load active session messages AFTER API state might be updated
         if (state.activeSessionId) ui.loadSessionUI(state.activeSessionId);
         else { console.error("Initialization finished but no active session ID is set."); ui.showSystemMessage("錯誤：無法確定要載入哪個聊天。", "init-error", true); }
 
-        ui.adjustTextareaHeight(); // Init textarea height
+        ui.adjustTextareaHeight();
 
-        // 4. Setup global event listeners AFTER initial rendering is done
+        // 4. Setup global event listeners
         setupEventListeners();
 
         console.log("Chat initialization complete.");
     }
 
     // --- Start the Application ---
-    initializeChat(); // Run initialization
+    initializeChat();
 
 }); // End of DOMContentLoaded listener
