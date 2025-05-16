@@ -1,10 +1,7 @@
 /**
  * Grok Web Chat - V8 (Refactored with User Requests & Edit Bug Fix - Approach 2: Match Height)
+ * + Streaming API Response & max_tokens
  * Manages frontend logic for interacting with Grok API via localStorage.
- * Changes:
- * 1. Enter key now creates a newline, does not send.
- * 2. Auto-connects with stored API key on page load.
- * 3. In-place message editing UI (Uses original height for initial textarea size).
  */
 document.addEventListener('DOMContentLoaded', () => {
     // --- Configuration ---
@@ -21,6 +18,11 @@ document.addEventListener('DOMContentLoaded', () => {
             theme: 'theme'
         },
         defaultModel: 'grok-3-mini-beta',
+        apiParameters: { // New section for API parameters
+            max_tokens: 8192,
+            temperature: 0.7,
+            stream: true // Enable streaming by default
+        },
         elements: { // Cache DOM elements
             chatMessages: document.getElementById('chat-messages'),
             userInput: document.getElementById('user-input'),
@@ -129,12 +131,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 case 'assistant':
                     messageDiv.classList.add('assistant-message');
                     try {
-                        const rawHtml = marked.parse(content, { gfm: true, breaks: true });
+                        // For assistant, content might be initially empty during streaming
+                        const rawHtml = marked.parse(content || "", { gfm: true, breaks: true });
                         const cleanHtml = DOMPurify.sanitize(rawHtml, { USE_PROFILES: { html: true } });
                         contentContainer.innerHTML = cleanHtml;
                     } catch (e) {
                         console.error("Error rendering assistant message:", e);
-                        contentContainer.textContent = content;
+                        contentContainer.textContent = content || ""; // Fallback
                         messageDiv.style.border = '1px dashed red';
                     }
                     break;
@@ -283,69 +286,53 @@ document.addEventListener('DOMContentLoaded', () => {
         updateThemeUI: () => { ui.getElement('body').classList.toggle('dark-mode', state.currentTheme === 'dark'); const icon = ui.getElement('themeToggleButton').querySelector('i'); icon.className = state.currentTheme === 'dark' ? 'fas fa-moon' : 'fas fa-sun'; },
         adjustTextareaHeight: () => { const textarea = ui.getElement('userInput'); const maxHeight = 120; textarea.style.height = 'auto'; const newHeight = Math.min(textarea.scrollHeight, maxHeight); textarea.style.height = `${newHeight}px`; },
 
-        // --- REVISED In-Place Editing UI Functions (Approach 2: Match Height) ---
         showEditUI: (messageElement, initialContent) => {
             messageElement.classList.add('editing');
-            ui.hideAllMessageActions(); // Hide action buttons on other messages
+            ui.hideAllMessageActions(); 
 
             const contentContainer = messageElement.querySelector('.message-content');
             if (!contentContainer) return;
 
-            // --- Step 1: Capture original height ---
             const originalHeight = contentContainer.offsetHeight;
-            // ---
-
-            // Store original HTML content for potential cancellation
             const rawOriginalContent = messageElement.dataset.originalContent || initialContent;
             messageElement.dataset.editingOriginalHtml = contentContainer.innerHTML;
-
-            // Clear the container
             contentContainer.innerHTML = '';
 
-            // --- Step 2: Create textarea & controls ---
             const textarea = document.createElement('textarea');
             textarea.value = rawOriginalContent;
             textarea.classList.add('inline-edit-textarea');
-            // Initial rows don't matter as much now, height calculation will override
-            textarea.rows = 3; // Set a small default, will be adjusted
+            textarea.rows = 3; 
 
             const controlsDiv = document.createElement('div');
             controlsDiv.classList.add('inline-edit-controls');
             controlsDiv.innerHTML = `<button class="cancel-edit-button">取消</button><button class="save-edit-button">保存</button>`;
-            // ---
+            
+            // Improved: Dynamically create and measure controls for more accurate height
+            const tempControlsDiv = document.createElement('div');
+            tempControlsDiv.classList.add('inline-edit-controls');
+            tempControlsDiv.style.position = 'absolute'; tempControlsDiv.style.left = '-9999px'; tempControlsDiv.style.visibility = 'hidden';
+            tempControlsDiv.innerHTML = `<button class="cancel-edit-button">取消</button><button class="save-edit-button">保存</button>`;
+            document.body.appendChild(tempControlsDiv);
+            const actualControlsHeight = tempControlsDiv.offsetHeight + 5; // +5 for margin-bottom on textarea
+            document.body.removeChild(tempControlsDiv);
 
-            // --- Step 3: Estimate controls height ---
-            const estimatedControlsHeight = 35; // Adjust this value if needed (pixels)
-            // ---
-
-            // --- Step 4: Calculate and set initial textarea min-height ---
-            // Ensure a minimum reasonable height (e.g., 50px)
-            const targetTextareaMinHeight = Math.max(50, originalHeight - estimatedControlsHeight);
+            const targetTextareaMinHeight = Math.max(50, originalHeight - actualControlsHeight);
             textarea.style.minHeight = `${targetTextareaMinHeight}px`;
-            // ---
 
-            // Append textarea and controls
             contentContainer.appendChild(textarea);
             contentContainer.appendChild(controlsDiv);
 
-            // --- Step 5: Adjust height based on content, respecting min/max ---
-            ui.adjustTextareaHeightForEdit(textarea); // Call adjust function immediately
-            // ---
-
+            ui.adjustTextareaHeightForEdit(textarea); 
             textarea.focus();
             textarea.select();
         },
 
         hideEditUI: (messageElement) => {
              if (!messageElement || !messageElement.classList.contains('editing')) return;
-
              const contentContainer = messageElement.querySelector('.message-content');
-
-             // Restore original content (handles re-rendering if needed)
              if (contentContainer && messageElement.dataset.editingOriginalHtml) {
                  contentContainer.innerHTML = messageElement.dataset.editingOriginalHtml;
              } else if (contentContainer && messageElement.dataset.originalContent) {
-                  // Fallback re-render
                   const originalRaw = messageElement.dataset.originalContent;
                   const role = messageElement.classList.contains('user-message') ? 'user' : 'assistant';
                   if (role === 'user') {
@@ -359,35 +346,22 @@ document.addEventListener('DOMContentLoaded', () => {
                       }
                   }
              } else {
-                  console.warn("Could not restore original content for message:", messageElement.dataset.id);
+                 console.warn("Could not restore original content for message:", messageElement.dataset.id);
                  if (contentContainer) contentContainer.innerHTML = '[恢復內容失敗]';
              }
-
-             // Clean up state and class
              messageElement.classList.remove('editing');
              delete messageElement.dataset.editingOriginalHtml;
-             // No need to manually remove textarea/controls, they are gone with innerHTML reset
         },
-        // --- End REVISED In-Place Editing UI Functions ---
-
         hideAllMessageActions: () => { document.querySelectorAll('.message.actions-visible').forEach(el => { if (!el.classList.contains('editing')) el.classList.remove('actions-visible'); }); },
 
         adjustTextareaHeightForEdit: (textarea) => {
-            const maxHeight = 400; // Keep the increased max height from previous step
-            // Get the computed minHeight style value
+            const maxHeight = 400; 
             const computedMinHeight = parseInt(window.getComputedStyle(textarea).minHeight, 10) || 0;
-
-            textarea.style.height = 'auto'; // Reset height
+            textarea.style.height = 'auto'; 
             const scrollHeight = textarea.scrollHeight;
-
-            // Determine the new height:
-            // It should be at least the scrollHeight (content height)
-            // AND at least the computedMinHeight (set based on original bubble)
-            // AND at most the maxHeight
             const newHeight = Math.min(maxHeight, Math.max(computedMinHeight, scrollHeight));
-
             textarea.style.height = `${newHeight}px`;
-            textarea.style.overflowY = (scrollHeight > maxHeight || newHeight >= maxHeight) ? 'auto' : 'hidden'; // Show scroll if content exceeds max OR if height is set to max
+            textarea.style.overflowY = (scrollHeight > maxHeight || newHeight >= maxHeight) ? 'auto' : 'hidden'; 
         },
 
         closeSidebarIfMobile: () => { if (window.innerWidth <= 768) events.handleCloseSidebar(); },
@@ -422,41 +396,216 @@ document.addEventListener('DOMContentLoaded', () => {
              }
          },
         callGrokApi: async () => {
-            const userInputEl = ui.getElement('userInput'); const userText = userInputEl.value.trim(); if (!userText || state.isLoading) return;
-            if (!state.apiKey) { ui.showSystemMessage('請先在側邊欄連線 API 金鑰。', `error-no-api-${logic.generateMessageId()}`, true); events.handleSidebarToggle(true); return; }
-            if (!state.activeSessionId) { ui.showSystemMessage('錯誤：沒有活動的聊天會話。請嘗試新增或選擇一個聊天。', `error-no-session-${logic.generateMessageId()}`, true); return; }
-            state.isLoading = true; ui.updateChatInputState(false);
-            const userMessageId = logic.generateMessageId(); const userMessage = { role: 'user', content: userText, id: userMessageId, timestamp: Date.now() };
+            const userInputEl = ui.getElement('userInput');
+            const userText = userInputEl.value.trim();
+            if (!userText || state.isLoading) return;
+
+            if (!state.apiKey) {
+                ui.showSystemMessage('請先在側邊欄連線 API 金鑰。', `error-no-api-${logic.generateMessageId()}`, true);
+                events.handleSidebarToggle(true);
+                return;
+            }
+            if (!state.activeSessionId) {
+                ui.showSystemMessage('錯誤：沒有活動的聊天會話。請嘗試新增或選擇一個聊天。', `error-no-session-${logic.generateMessageId()}`, true);
+                return;
+            }
+
+            state.isLoading = true;
+            ui.updateChatInputState(false);
+
+            const userMessageId = logic.generateMessageId();
+            const userMessage = { role: 'user', content: userText, id: userMessageId, timestamp: Date.now() };
             logic.addMessageToCurrentSession(userMessage);
             const newMessageElement = ui.renderMessage(userMessage);
             if (newMessageElement) ui.getElement('chatMessages').appendChild(newMessageElement);
 
             ui.scrollToBottom();
-            userInputEl.value = ''; ui.adjustTextareaHeight();
-            const loadingId = `loading-${userMessageId}`; ui.showLoadingIndicator(loadingId);
+            userInputEl.value = '';
+            ui.adjustTextareaHeight();
+
+            const loadingId = `loading-${userMessageId}`;
+            ui.showLoadingIndicator(loadingId);
+
             try {
                 const currentSessionMessages = logic.getCurrentSessionMessages();
-                const messagesToSend = currentSessionMessages.filter(msg => ['user', 'assistant'].includes(msg.role)).map(({ role, content }) => ({ role, content }));
-                const requestBody = { messages: messagesToSend, model: state.currentModel, stream: false, temperature: 0.7 };
-                const response = await fetch(config.apiUrls.chat, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${state.apiKey}` }, body: JSON.stringify(requestBody) });
-                ui.removeElementById(loadingId);
-                if (!response.ok) {
-                    let errorText = await response.text(); let errorMessage = `API 請求失敗 (${response.status} ${response.statusText})`;
-                    try { const errorJson = JSON.parse(errorText); errorMessage += `: ${errorJson.error?.message || errorJson.error || JSON.stringify(errorJson)}`; } catch (e) { errorMessage += `\n回應: ${errorText}`; }
-                    if (response.status === 401 || response.status === 403) { errorMessage += " 金鑰可能已失效或無效，請檢查並重新連線。"; logic.clearApiKey(false); }
-                    console.error('API Error:', errorMessage); ui.showSystemMessage(errorMessage, `error-api-${logic.generateMessageId()}`, true);
-                } else {
+                // Ensure we don't send system messages or messages without content if any slip through
+                const messagesToSend = currentSessionMessages
+                    .filter(msg => ['user', 'assistant'].includes(msg.role) && typeof msg.content === 'string')
+                    .map(({ role, content }) => ({ role, content }));
+
+                const requestBody = {
+                    messages: messagesToSend,
+                    model: state.currentModel,
+                    stream: config.apiParameters.stream,
+                    temperature: config.apiParameters.temperature,
+                    max_tokens: config.apiParameters.max_tokens
+                };
+
+                const response = await fetch(config.apiUrls.chat, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${state.apiKey}` },
+                    body: JSON.stringify(requestBody)
+                });
+
+                ui.removeElementById(loadingId); // Remove loading indicator once response headers are received
+
+                if (response.ok && requestBody.stream) {
+                    const assistantMessageId = logic.generateMessageId();
+                    let accumulatedContent = '';
+                    const assistantMessageData = {
+                        role: 'assistant',
+                        content: accumulatedContent, // Start empty
+                        id: assistantMessageId,
+                        timestamp: Date.now()
+                    };
+
+                    logic.addMessageToCurrentSession(assistantMessageData); // Add to state immediately
+
+                    const assistantMessageElement = ui.renderMessage(assistantMessageData);
+                    if (assistantMessageElement) {
+                        ui.getElement('chatMessages').appendChild(assistantMessageElement);
+                        ui.scrollToBottom();
+                    } else {
+                        console.error("Could not render initial assistant message bubble for streaming.");
+                        // This is a critical UI failure, reset state and allow user to try again
+                        state.isLoading = false;
+                        ui.updateChatInputState(true);
+                        userInputEl.focus();
+                        return;
+                    }
+
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buffer = ''; // Buffer for incomplete SSE lines
+
+                    try {
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done) {
+                                console.log("Stream finished by reader 'done'.");
+                                break;
+                            }
+
+                            buffer += decoder.decode(value, { stream: true });
+                            let eolIndex;
+
+                            while ((eolIndex = buffer.indexOf('\n')) >= 0) {
+                                const line = buffer.substring(0, eolIndex).trim();
+                                buffer = buffer.substring(eolIndex + 1);
+
+                                if (line.startsWith('data: ')) {
+                                    const jsonData = line.substring(6);
+                                    if (jsonData.trim().toLowerCase() === '[done]') { // Grok might use lowercase [done]
+                                        console.log("Stream signaled [DONE].");
+                                        // Continue to rely on reader.done for actual stream end
+                                        continue;
+                                    }
+                                    try {
+                                        const parsedData = JSON.parse(jsonData);
+                                        let chunkContent = "";
+                                        let finishReason = null;
+
+                                        if (parsedData.choices && parsedData.choices[0]) {
+                                            if (parsedData.choices[0].delta && parsedData.choices[0].delta.content) {
+                                                chunkContent = parsedData.choices[0].delta.content;
+                                            }
+                                            if (parsedData.choices[0].finish_reason) {
+                                                finishReason = parsedData.choices[0].finish_reason;
+                                                console.log("Stream finished with reason:", finishReason);
+                                            }
+                                        } else if (parsedData.error) {
+                                            console.error("Error message in stream:", parsedData.error);
+                                            const errorContent = `API Stream Error: ${parsedData.error.message || JSON.stringify(parsedData.error)}`;
+                                            accumulatedContent += `\n\n--- Stream Error: ${errorContent} ---`; // Append error to message
+                                            assistantMessageData.content = accumulatedContent; // Update state
+                                            // No need to throw, let the stream complete if possible, error is now part of the message
+                                        }
+
+
+                                        if (chunkContent) {
+                                            accumulatedContent += chunkContent;
+                                            assistantMessageData.content = accumulatedContent; // Update the object in session.messages
+
+                                            if (assistantMessageElement) {
+                                                const contentContainer = assistantMessageElement.querySelector('.message-content');
+                                                if (contentContainer) {
+                                                    const rawHtml = marked.parse(accumulatedContent, { gfm: true, breaks: true });
+                                                    contentContainer.innerHTML = DOMPurify.sanitize(rawHtml, { USE_PROFILES: { html: true } });
+                                                    assistantMessageElement.dataset.originalContent = accumulatedContent;
+                                                    ui.scrollToBottom();
+                                                }
+                                            }
+                                        }
+                                        if (finishReason) {
+                                            // If there's a finish reason, we can consider the stream effectively ended here for this choice.
+                                            // The outer `while(true)` loop with `reader.read()` will still wait for `done:true`.
+                                        }
+                                    } catch (e) {
+                                        console.error('Error processing stream data line:', `"${jsonData}"`, e);
+                                    }
+                                }
+                            }
+                        }
+                    } catch (streamError) {
+                        console.error('Error reading from stream:', streamError);
+                        ui.showSystemMessage(`讀取 AI 回應流時發生錯誤: ${streamError.message}`, `error-read-stream-${assistantMessageId}`, true);
+                        assistantMessageData.content = accumulatedContent + `\n\n--- Error reading stream: ${streamError.message} ---`; // Append error to message
+                    } finally {
+                        // Update the actual message content in the state object, then save
+                        assistantMessageData.content = accumulatedContent; // Ensure final content is set
+                        storage.saveSessions(); // Save the session with the complete or partial streamed message.
+                        // Reset loading state after stream processing is fully complete (success or error)
+                        state.isLoading = false;
+                        ui.updateChatInputState(true);
+                        userInputEl.focus();
+                    }
+
+                } else if (response.ok) { // Non-streaming response (fallback)
                     const data = await response.json();
                     if (data.choices && data.choices.length > 0 && data.choices[0].message?.content) {
-                        const assistantReply = data.choices[0].message.content.trim(); const assistantMessageId = logic.generateMessageId();
+                        const assistantReply = data.choices[0].message.content.trim();
+                        const assistantMessageId = logic.generateMessageId();
                         const assistantMessage = { role: 'assistant', content: assistantReply, id: assistantMessageId, timestamp: Date.now() };
                         logic.addMessageToCurrentSession(assistantMessage);
-                         const newAssistantMsgElement = ui.renderMessage(assistantMessage);
-                         if(newAssistantMsgElement) ui.getElement('chatMessages').appendChild(newAssistantMsgElement);
-                         ui.scrollToBottom();
-                    } else { console.error('Invalid API response structure:', data); ui.showSystemMessage('收到無效的 API 回應格式。', `error-api-format-${logic.generateMessageId()}`, true); }
+                        const newAssistantMsgElement = ui.renderMessage(assistantMessage);
+                        if (newAssistantMsgElement) ui.getElement('chatMessages').appendChild(newAssistantMsgElement);
+                        ui.scrollToBottom();
+                    } else {
+                        console.error('Invalid API response structure (non-streaming):', data);
+                        ui.showSystemMessage('收到無效的 API 回應格式。', `error-api-format-${logic.generateMessageId()}`, true);
+                    }
+                    state.isLoading = false;
+                    ui.updateChatInputState(true);
+                    userInputEl.focus();
+                } else { // Handle !response.ok (for both streaming and non-streaming attempts)
+                    let errorText = await response.text();
+                    let errorMessage = `API 請求失敗 (${response.status} ${response.statusText})`;
+                    try {
+                        const errorJson = JSON.parse(errorText);
+                        errorMessage += `: ${errorJson.error?.message || errorJson.error || JSON.stringify(errorJson)}`;
+                    } catch (e) { errorMessage += `\n回應: ${errorText}`; }
+
+                    if (response.status === 401 || response.status === 403) {
+                        errorMessage += " 金鑰可能已失效或無效，請檢查並重新連線。";
+                        logic.clearApiKey(false); // Don't confirm, just clear and notify
+                    }
+                    console.error('API Error:', errorMessage);
+                    ui.showSystemMessage(errorMessage, `error-api-${logic.generateMessageId()}`, true);
+                    state.isLoading = false;
+                    ui.updateChatInputState(true);
+                    userInputEl.focus();
                 }
-            } catch (error) { console.error('Error calling Grok API:', error); ui.removeElementById(loadingId); if (error.message && !error.message.includes('API 請求失敗')) { ui.showSystemMessage(`客戶端網路或處理錯誤: ${error.message}`, `error-client-${logic.generateMessageId()}`, true); } } finally { state.isLoading = false; ui.updateChatInputState(true); userInputEl.focus(); }
+            } catch (error) { // Catches errors from fetch itself, or client-side pre-API call errors
+                console.error('Error calling Grok API or client-side pre-API error:', error);
+                ui.removeElementById(loadingId); // Ensure loading indicator is removed
+                // Avoid double-reporting generic network if specific API error was handled above
+                if (!String(error.message).includes('API 請求失敗')) {
+                    ui.showSystemMessage(`客戶端網路或處理錯誤: ${error.message}`, `error-client-${logic.generateMessageId()}`, true);
+                }
+                state.isLoading = false;
+                ui.updateChatInputState(true);
+                userInputEl.focus();
+            }
         }
     };
 
@@ -466,8 +615,37 @@ document.addEventListener('DOMContentLoaded', () => {
         generateMessageId: () => `msg-${state.messageIdCounter++}`,
         getCurrentSession: () => state.sessions.find(s => s.sessionId === state.activeSessionId),
         getCurrentSessionMessages: () => logic.getCurrentSession()?.messages || [],
-        addMessageToCurrentSession: (message) => { const session = logic.getCurrentSession(); if (session) { if (!message.id) { message.id = logic.generateMessageId(); console.warn("Message added without ID, generated:", message.id); } session.messages.push(message); storage.saveSessions(); } else { console.error("Cannot add message: No active session found."); ui.showSystemMessage("錯誤：無法將訊息添加到當前聊天中，找不到活動會話。", `error-add-msg-${Date.now()}`, true); } },
-        updateMessageInSession: (sessionId, messageId, newContent) => { const session = state.sessions.find(s => s.sessionId === sessionId); const messageIndex = session?.messages.findIndex(msg => msg.id === messageId); if (session && messageIndex !== undefined && messageIndex > -1) { session.messages[messageIndex].content = newContent; session.messages[messageIndex].edited = true; session.messages[messageIndex].lastUpdatedAt = Date.now(); storage.saveSessions(); return true; } console.error(`Failed to update message: session ${sessionId}, message ${messageId}`); return false; },
+        addMessageToCurrentSession: (message) => {
+            const session = logic.getCurrentSession();
+            if (session) {
+                if (!message.id) {
+                    message.id = logic.generateMessageId();
+                    console.warn("Message added without ID, generated:", message.id);
+                }
+                session.messages.push(message);
+                // For streaming, saveSessions will be called after the stream is complete
+                // For non-streaming messages (like user messages), save immediately
+                if (message.role === 'user' || !config.apiParameters.stream) { // Save if user message or if not streaming assistant
+                    storage.saveSessions();
+                }
+            } else {
+                console.error("Cannot add message: No active session found.");
+                ui.showSystemMessage("錯誤：無法將訊息添加到當前聊天中，找不到活動會話。", `error-add-msg-${Date.now()}`, true);
+            }
+        },
+        updateMessageInSession: (sessionId, messageId, newContent) => {
+            const session = state.sessions.find(s => s.sessionId === sessionId);
+            const messageIndex = session?.messages.findIndex(msg => msg.id === messageId);
+            if (session && messageIndex !== undefined && messageIndex > -1) {
+                session.messages[messageIndex].content = newContent;
+                session.messages[messageIndex].edited = true; // Mark as edited
+                session.messages[messageIndex].lastUpdatedAt = Date.now(); // Update timestamp
+                storage.saveSessions(); // Save after an edit
+                return true;
+            }
+            console.error(`Failed to update message: session ${sessionId}, message ${messageId}`);
+            return false;
+        },
         deleteMessageFromSession: (sessionId, messageId) => { const session = state.sessions.find(s => s.sessionId === sessionId); const messageIndex = session?.messages.findIndex(msg => msg.id === messageId); if (session && messageIndex !== undefined && messageIndex > -1) { session.messages.splice(messageIndex, 1); storage.saveSessions(); return true; } console.error(`Failed to delete message: session ${sessionId}, message ${messageId}`); return false; },
         deleteSession: (sessionId) => { const sessionIndex = state.sessions.findIndex(s => s.sessionId === sessionId); if (sessionIndex > -1) { state.sessions.splice(sessionIndex, 1); storage.saveSessions(); return true; } console.error(`Failed to delete session: ${sessionId}`); return false; },
         renameSession: (sessionId, newName) => { const session = state.sessions.find(s => s.sessionId === sessionId); const trimmedName = newName?.trim(); if (session && trimmedName) { session.name = trimmedName; storage.saveSessions(); return true; } console.warn(`Failed to rename session ${sessionId} to "${newName}" (name empty or session not found)`); return false; },
@@ -477,7 +655,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 state.apiKey = null;
                 storage.removeApiKey();
                 ui.getElement('apiKeyInput').value = '';
-                ui.getElement('apiKeyInput').type = 'text';
+                ui.getElement('apiKeyInput').type = 'text'; // Show input as text
                 ui.updateApiStatus("金鑰已清除，請重新輸入並連線", "");
                 ui.updateChatInputState(false);
                 ui.getElement('clearApiKeyButton').style.display = 'none';
@@ -508,16 +686,26 @@ document.addEventListener('DOMContentLoaded', () => {
                     ui.updateApiStatus("連線成功！", "success");
                     ui.updateChatInputState(true);
                     ui.getElement('clearApiKeyButton').style.display = 'block';
-                    ui.getElement('apiKeyInput').value = '********';
+                    ui.getElement('apiKeyInput').value = '********'; // Mask key
                     ui.getElement('apiKeyInput').type = 'password';
                     ui.closeSidebarIfMobile();
                 } else {
-                    state.apiKey = null;
+                    // API status already updated by testApiKey on failure
+                    state.apiKey = null; // Ensure state is cleared
                     storage.removeApiKey();
                     ui.updateChatInputState(false);
                     ui.getElement('clearApiKeyButton').style.display = 'none';
-                    ui.getElement('apiKeyInput').type = 'text';
+                    ui.getElement('apiKeyInput').type = 'text'; // Ensure it's text if it failed
                 }
+            }).catch(err => { // Catch errors from testApiKey promise itself
+                console.error("Error during API key connection:", err);
+                ui.updateApiStatus(`連線測試時發生錯誤: ${err.message}`, "error");
+                state.apiKey = null;
+                storage.removeApiKey();
+                ui.updateChatInputState(false);
+                ui.getElement('clearApiKeyButton').style.display = 'none';
+                ui.getElement('apiKeyInput').type = 'text';
+            }).finally(() => {
                 state.isLoading = false;
                 ui.getElement('connectApiButton').disabled = false;
                 ui.getElement('apiKeyInput').disabled = false;
@@ -526,7 +714,7 @@ document.addEventListener('DOMContentLoaded', () => {
         },
         handleClearApiKey: () => { if (logic.clearApiKey(true)) { ui.closeSidebarIfMobile(); } },
         handleNewChat: () => {
-            if (state.currentEditingMessageId) { if (!confirm("您正在編輯訊息，新增聊天將丟失未保存的更改。確定要繼續嗎？")) { return; } events.handleCancelEdit(state.currentEditingMessageId, true); } // Force cancel
+            if (state.currentEditingMessageId) { if (!confirm("您正在編輯訊息，新增聊天將丟失未保存的更改。確定要繼續嗎？")) { return; } events.handleCancelEdit(state.currentEditingMessageId, true); } 
             const now = Date.now(); const newSession = { sessionId: logic.generateSessionId(), name: `新聊天 ${new Date(now).toLocaleTimeString('zh-TW', { hour12: false })}`, messages: [], createdAt: now, lastUpdatedAt: now };
             state.sessions.unshift(newSession); state.activeSessionId = newSession.sessionId;
             storage.saveSessions(); ui.renderSessionList(); ui.loadSessionUI(newSession.sessionId);
@@ -542,7 +730,7 @@ document.addEventListener('DOMContentLoaded', () => {
                          return;
                      }
                  }
-                 events.handleCancelEdit(state.currentEditingMessageId, true); // Force cancel
+                 events.handleCancelEdit(state.currentEditingMessageId, true); 
              }
             if (sessionId !== state.activeSessionId) { ui.loadSessionUI(sessionId); }
              ui.closeSidebarIfMobile();
@@ -585,7 +773,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const currentSession = logic.getCurrentSession();
             if (currentSession && confirm(`確定要永久刪除聊天 "${currentSession.name || '此聊天'}" 嗎？此操作無法復原。`)) {
                 if (state.currentEditingMessageId && state.activeSessionId === logic.getCurrentSession()?.sessionId) {
-                    events.handleCancelEdit(state.currentEditingMessageId, true); // Force cancel without prompt
+                    events.handleCancelEdit(state.currentEditingMessageId, true); 
                 }
                 const sessionIndex = state.sessions.findIndex(s => s.sessionId === state.activeSessionId);
                 if (logic.deleteSession(state.activeSessionId)) {
@@ -598,7 +786,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (nextSessionId) {
                         ui.loadSessionUI(nextSessionId);
                     } else {
-                        events.handleNewChat();
+                        events.handleNewChat(); 
                     }
                 }
             }
@@ -615,7 +803,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const target = event.target;
             const messageElement = target.closest('.message[data-id]');
 
-            // Click outside relevant areas? Cancel edit / hide actions.
             if (!target.closest('.message') && !target.closest('.sidebar') && !target.closest('.mobile-header')) {
                 if (state.currentEditingMessageId) {
                     const currentMessageElement = document.querySelector(`.message[data-id="${state.currentEditingMessageId}"]`);
@@ -626,7 +813,7 @@ document.addEventListener('DOMContentLoaded', () => {
                              return;
                          }
                     }
-                    events.handleCancelEdit(state.currentEditingMessageId, true); // Force cancel
+                    events.handleCancelEdit(state.currentEditingMessageId, true); 
                 }
                 ui.hideAllMessageActions();
                 return;
@@ -635,7 +822,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!messageElement) return;
             const messageId = messageElement.dataset.id;
 
-            // Handle clicks within the edit controls (Save/Cancel) of *this* message
             if (messageElement.classList.contains('editing')) {
                  const saveButton = target.closest('.inline-edit-controls .save-edit-button');
                  const cancelButton = target.closest('.inline-edit-controls .cancel-edit-button');
@@ -644,7 +830,6 @@ document.addEventListener('DOMContentLoaded', () => {
                  return;
             }
 
-            // Clicked on a different message while another is being edited?
             if (state.currentEditingMessageId && state.currentEditingMessageId !== messageId) {
                 const currentMessageElement = document.querySelector(`.message[data-id="${state.currentEditingMessageId}"]`);
                 const editTextArea = currentMessageElement?.querySelector('.message-content textarea.inline-edit-textarea');
@@ -654,10 +839,9 @@ document.addEventListener('DOMContentLoaded', () => {
                          return;
                      }
                  }
-                events.handleCancelEdit(state.currentEditingMessageId, true); // Force cancel
+                events.handleCancelEdit(state.currentEditingMessageId, true); 
             }
 
-            // Handle clicks on action buttons (Copy, Edit, Delete)
             const actionButton = target.closest('.message-actions .action-button');
             if (actionButton) {
                  const messageData = logic.getCurrentSession()?.messages.find(msg => msg.id === messageId);
@@ -674,7 +858,6 @@ document.addEventListener('DOMContentLoaded', () => {
                  return;
              }
 
-            // Clicked directly on the message body (not actions, not while editing) - toggle action visibility
             if (!target.closest('.message-actions') && !target.closest('.message-content')) {
                  const currentlyVisible = document.querySelector('.message.actions-visible');
                  if (currentlyVisible && currentlyVisible !== messageElement) {
@@ -699,7 +882,7 @@ document.addEventListener('DOMContentLoaded', () => {
                          return;
                      }
                  }
-                events.handleCancelEdit(state.currentEditingMessageId, true); // Force cancel
+                events.handleCancelEdit(state.currentEditingMessageId, true); 
             }
             state.currentEditingMessageId = messageId;
             ui.showEditUI(messageElement, rawContent);
@@ -717,7 +900,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const newContent = textarea.value;
             const originalMessageData = logic.getCurrentSession()?.messages.find(msg => msg.id === messageId);
-            const originalRawContent = messageElement.dataset.originalContent;
+            const originalRawContent = messageElement.dataset.originalContent; // Raw content before this edit started
 
             if (!originalMessageData) {
                  console.error("SaveEdit: Original message data not found for ID:", messageId);
@@ -735,22 +918,22 @@ document.addEventListener('DOMContentLoaded', () => {
                  }
 
                 if (logic.updateMessageInSession(state.activeSessionId, messageId, newContent)) {
+                    // Update the dataset.originalContent to the new saved content
                     messageElement.dataset.originalContent = newContent;
 
+                    // Re-render the content display (already done by logic.updateMessageInSession's save & potential list re-render, but ensure specific element is updated)
                     if (originalMessageData.role === 'user') {
                          contentContainer.textContent = newContent;
-                         messageElement.dataset.editingOriginalHtml = contentContainer.innerHTML;
                     } else if (originalMessageData.role === 'assistant') {
                          try {
                              const rawHtml = marked.parse(newContent, { gfm: true, breaks: true });
                              contentContainer.innerHTML = DOMPurify.sanitize(rawHtml, { USE_PROFILES: { html: true } });
-                             messageElement.dataset.editingOriginalHtml = contentContainer.innerHTML;
                          } catch (e) {
                              console.error("Error re-rendering edited assistant message:", e);
-                             contentContainer.textContent = newContent;
-                             messageElement.dataset.editingOriginalHtml = contentContainer.innerHTML;
+                             contentContainer.textContent = newContent; // Fallback
                          }
                     }
+                     messageElement.dataset.editingOriginalHtml = contentContainer.innerHTML; // Update for subsequent cancels
 
                     let editedIndicator = messageElement.querySelector('.edited-indicator');
                      if (!editedIndicator) {
@@ -759,14 +942,12 @@ document.addEventListener('DOMContentLoaded', () => {
                              actionsContainer.insertAdjacentHTML('beforeend', '<span class="edited-indicator" title="已編輯"><i class="fas fa-history"></i></span>');
                          }
                      }
-
-                    // IMPORTANT: Call hideEditUI *after* potentially adding indicator and updating dataset
-                    ui.hideEditUI(messageElement);
-                    state.currentEditingMessageId = null;
+                     ui.hideEditUI(messageElement); // Call this after updates
+                     state.currentEditingMessageId = null;
                  } else {
                      alert("儲存編輯失敗！請稍後再試。");
                  }
-            } else {
+            } else { // Content hasn't changed
                  ui.hideEditUI(messageElement);
                  state.currentEditingMessageId = null;
             }
@@ -791,12 +972,11 @@ document.addEventListener('DOMContentLoaded', () => {
                          state.currentEditingMessageId = null;
                      }
                  }
-             } else if (state.currentEditingMessageId === messageId) {
+             } else if (state.currentEditingMessageId === messageId) { // Ensure state is cleared if element not found but ID matches
                  state.currentEditingMessageId = null;
              }
         },
 
-        // --- Long Press Handlers ---
         handleSessionPressStart: (event) => {
             const targetLi = event.target.closest('.session-item');
             if (!targetLi) return;
@@ -833,52 +1013,44 @@ document.addEventListener('DOMContentLoaded', () => {
         ui.getElement('newChatButton').addEventListener('click', events.handleNewChat);
         ui.getElement('modelSelector').addEventListener('change', events.handleModelChange);
 
-        // Event delegation for message actions & edit controls
         ui.getElement('chatMessages').addEventListener('click', events.handleMessageActions);
 
-        // Global listeners
         document.addEventListener('mousedown', events.handleDocumentClickForHideRename, true);
         document.addEventListener('touchstart', events.handleDocumentClickForHideRename, true);
-        document.addEventListener('click', events.handleMessageActions, true); // Handles clicks outside messages for cancel/hide
-
-        // console.log("Event listeners attached.");
+        document.addEventListener('click', events.handleMessageActions, true); 
     }
 
     // --- App Initialization Function ---
     function initializeChat() {
         console.log("Initializing chat...");
-        // 1. Load persistent data
         state.currentTheme = storage.loadTheme();
         state.apiKey = storage.loadApiKey();
         state.currentModel = storage.loadModel();
 
-        // 2. Load sessions and determine active session
         const sessionsLoaded = storage.loadSessions();
         if (!sessionsLoaded || state.sessions.length === 0) {
-            events.handleNewChat();
+            events.handleNewChat(); 
         } else {
             const lastActiveId = storage.loadActiveSessionId();
             if (lastActiveId && state.sessions.some(s => s.sessionId === lastActiveId)) {
                 state.activeSessionId = lastActiveId;
             } else if (state.sessions.length > 0) {
-                state.activeSessionId = state.sessions[0].sessionId;
+                state.activeSessionId = state.sessions[0].sessionId; 
                 storage.saveActiveSessionId();
             } else {
-                 events.handleNewChat();
+                 events.handleNewChat(); 
             }
         }
 
-        // 3. Initialize UI based on loaded state
         ui.updateThemeUI();
         ui.getElement('modelSelector').value = state.currentModel;
         ui.renderSessionList();
 
-        // Init API Key UI & Attempt Auto-Connection
         if (state.apiKey) {
             ui.getElement('apiKeyInput').value = '********';
             ui.getElement('apiKeyInput').type = 'password';
             ui.getElement('clearApiKeyButton').style.display = 'block';
-            ui.updateChatInputState(false);
+            ui.updateChatInputState(false); 
             ui.getElement('connectApiButton').disabled = true;
             ui.getElement('apiKeyInput').disabled = true;
             ui.updateApiStatus("正在自動測試金鑰...", "testing");
@@ -888,29 +1060,29 @@ document.addEventListener('DOMContentLoaded', () => {
                     ui.updateApiStatus("金鑰自動連線成功！", "success");
                     ui.updateChatInputState(true);
                 } else {
-                    state.apiKey = null;
-                    storage.removeApiKey();
-                    ui.getElement('apiKeyInput').value = ''; // Clear input on auto-fail
+                    // API status already updated by testApiKey
+                    state.apiKey = null; storage.removeApiKey();
+                    ui.getElement('apiKeyInput').value = ''; 
                     ui.getElement('apiKeyInput').type = 'text';
                     ui.getElement('clearApiKeyButton').style.display = 'none';
-                    ui.updateApiStatus("自動連線失敗，請檢查或重新輸入金鑰。", "error");
+                    // ui.updateApiStatus("自動連線失敗，請檢查或重新輸入金鑰。", "error"); // Already handled
                     ui.updateChatInputState(false);
                 }
-                ui.getElement('connectApiButton').disabled = false;
-                ui.getElement('apiKeyInput').disabled = false;
             }).catch(err => {
                 console.error("Error during auto-connection sequence:", err);
                 ui.updateApiStatus("自動連線時發生錯誤。", "error");
-                 ui.getElement('connectApiButton').disabled = false;
-                ui.getElement('apiKeyInput').disabled = false;
-                state.apiKey = null;
-                storage.removeApiKey();
+                state.apiKey = null; storage.removeApiKey();
                 ui.getElement('apiKeyInput').value = '';
                 ui.getElement('apiKeyInput').type = 'text';
                 ui.getElement('clearApiKeyButton').style.display = 'none';
                 ui.updateChatInputState(false);
+            }).finally(() => {
+                // Enable buttons regardless of auto-connect outcome if it wasn't a state.isLoading issue
+                if (!state.isLoading) { // isLoading might be true if user clicks connect while auto is running
+                    ui.getElement('connectApiButton').disabled = false;
+                    ui.getElement('apiKeyInput').disabled = false;
+                }
             });
-
         } else {
             ui.updateApiStatus("請輸入金鑰並連線", "");
             ui.updateChatInputState(false);
@@ -918,15 +1090,11 @@ document.addEventListener('DOMContentLoaded', () => {
             ui.getElement('apiKeyInput').type = 'text';
         }
 
-        // Load active session messages AFTER API state might be updated
         if (state.activeSessionId) ui.loadSessionUI(state.activeSessionId);
         else { console.error("Initialization finished but no active session ID is set."); ui.showSystemMessage("錯誤：無法確定要載入哪個聊天。", "init-error", true); }
 
         ui.adjustTextareaHeight();
-
-        // 4. Setup global event listeners
         setupEventListeners();
-
         console.log("Chat initialization complete.");
     }
 
